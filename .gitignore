@@ -1,0 +1,13 @@
+# IDE
+.idea/
+
+# Python
+__pycache__/
+*.pyc
+
+# Configuration (contient credentials)
+config.ini
+
+# Données personnelles
+Tickets_SuperU/
+*.pdf
