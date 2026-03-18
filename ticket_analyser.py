@@ -7,6 +7,7 @@ Optimisé pour le format des tickets Système U / LOCOMA SAS
 https://claude.ai/chat/64d8e228-2365-4c99-8e91-d108a2091d3d
 """
 
+import argparse
 import pymysql
 import re
 import os
@@ -494,8 +495,9 @@ class NouveauFormatParser(BaseTicketParser):
 
 
 class AnalyseurTicketU:
-    def __init__(self, config_file: str = "config.ini"):
+    def __init__(self, config_file: str = "config.ini", dry_run: bool = False):
         """Initialise l'analyseur avec la configuration de base de données"""
+        self.dry_run = dry_run
         self.config = self.load_config(config_file)
         self.connection = None
         self.connect_db()
@@ -616,21 +618,25 @@ class AnalyseurTicketU:
                 ''')
 
                 # Migration: ajouter la colonne enseigne si elle n'existe pas
-                try:
-                    cursor.execute('''
+                cursor.execute("""
+                    SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+                    WHERE TABLE_SCHEMA = %s AND TABLE_NAME = 'tickets' AND COLUMN_NAME = 'enseigne'
+                """, (self.config['database'],))
+                if cursor.fetchone()[0] == 0:
+                    cursor.execute("""
                         ALTER TABLE tickets ADD COLUMN enseigne VARCHAR(50) NOT NULL DEFAULT 'systeme_u' AFTER id
-                    ''')
+                    """)
                     cursor.execute('CREATE INDEX idx_enseigne ON tickets (enseigne)')
-                except Exception:
-                    pass  # La colonne existe déjà
 
                 # Migration: ajouter la colonne parser_name si elle n'existe pas
-                try:
-                    cursor.execute('''
+                cursor.execute("""
+                    SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+                    WHERE TABLE_SCHEMA = %s AND TABLE_NAME = 'tickets' AND COLUMN_NAME = 'parser_name'
+                """, (self.config['database'],))
+                if cursor.fetchone()[0] == 0:
+                    cursor.execute("""
                         ALTER TABLE tickets ADD COLUMN parser_name VARCHAR(50) DEFAULT 'inconnu'
-                    ''')
-                except Exception:
-                    pass  # La colonne existe déjà
+                    """)
 
                 print("✓ Tables MariaDB initialisées")
 
@@ -709,7 +715,11 @@ class AnalyseurTicketU:
         return None
 
     def sauvegarder_ticket(self, ticket: Ticket):
-        """Sauvegarde un ticket en base MariaDB"""
+        """Sauvegarde un ticket en base MariaDB (no-op en mode dry-run)"""
+        if self.dry_run:
+            print(f"  [DRY-RUN] {ticket.fichier} — {len(ticket.articles)} articles, {ticket.total:.2f}€ ({ticket.parser_name})")
+            return
+
         try:
             with self.connection.cursor() as cursor:
                 # Vérifier si le ticket existe déjà
@@ -799,7 +809,8 @@ class AnalyseurTicketU:
             return
 
         self.update_mode = None  # Réinitialiser l'état de session à chaque batch
-        print(f"\n=== TRAITEMENT DE {len(fichiers_pdf)} FICHIERS PDF ===")
+        mode_label = " [DRY-RUN — aucune écriture en base]" if self.dry_run else ""
+        print(f"\n=== TRAITEMENT DE {len(fichiers_pdf)} FICHIERS PDF{mode_label} ===")
 
         tickets_traites = 0
         tickets_erreur = 0
@@ -961,38 +972,67 @@ class AnalyseurTicketU:
 
 def main():
     """Fonction principale"""
+    parser = argparse.ArgumentParser(
+        description="Analyseur de tickets de caisse PDF Système U",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Exemples:\n"
+            "  %(prog)s --path /chemin/vers/tickets/\n"
+            "  %(prog)s --path /chemin/vers/tickets/ --dry-run\n"
+            "  %(prog)s --config mon_config.ini\n"
+        )
+    )
+    parser.add_argument(
+        "--path", "-p",
+        metavar="DOSSIER",
+        help="Chemin vers le dossier contenant les fichiers PDF"
+    )
+    parser.add_argument(
+        "--config", "-c",
+        metavar="FICHIER",
+        default="config.ini",
+        help="Fichier de configuration (défaut: config.ini)"
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Parse les tickets sans écrire en base de données"
+    )
+    args = parser.parse_args()
+
     print("╔══════════════════════════════════════════╗")
     print("║        ANALYSEUR TICKETS SYSTÈME U       ║")
     print("║             Version 1.0                  ║")
     print("╚══════════════════════════════════════════╝")
 
+    # Résoudre le chemin : arg > input interactif
+    dossier_tickets = args.path
+    if not dossier_tickets:
+        print("\n📂 Configuration:")
+        dossier_tickets = input("Chemin vers le dossier contenant les tickets PDF: ").strip()
+
+    if not dossier_tickets:
+        print("❌ Chemin vide, abandon.")
+        return
+
+    if not os.path.exists(dossier_tickets):
+        print(f"❌ Dossier non trouvé : {dossier_tickets}")
+        return
+
     analyseur = None
 
     try:
-        # Initialisation
-        analyseur = AnalyseurTicketU()
+        analyseur = AnalyseurTicketU(config_file=args.config, dry_run=args.dry_run)
 
-        # Demander le dossier des tickets
-        print("\n📂 Configuration:")
-        # dossier_tickets = input("Chemin vers le dossier contenant les tickets PDF: ").strip()
-        dossier_tickets = "/home/nicolas/PycharmProjects/TicketUanalyser/Tickets_SuperU/"
-        if not dossier_tickets:
-            print("❌ Chemin vide, abandon.")
-            return
-
-        if not os.path.exists(dossier_tickets):
-            print("❌ Dossier non trouvé!")
-            return
-
-        # Traitement des tickets
         analyseur.traiter_dossier(dossier_tickets)
 
-        # Vérification et statistiques
-        analyseur.verification_tickets()
-        analyseur.statistiques()
+        if not args.dry_run:
+            analyseur.verification_tickets()
+            analyseur.statistiques()
 
         print(f"\n✅ Traitement terminé!")
-        print(f"🗄️  Base de données: {analyseur.config['database']} sur {analyseur.config['host']}")
+        if not args.dry_run:
+            print(f"🗄️  Base de données: {analyseur.config['database']} sur {analyseur.config['host']}")
 
     except KeyboardInterrupt:
         print("\n\n⚠️  Interruption par l'utilisateur")
