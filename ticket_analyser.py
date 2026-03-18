@@ -43,6 +43,7 @@ class Ticket:
     total: float
     mode_paiement: str
     fichier: str
+    parser_name: str
 
 
 class BaseTicketParser(ABC):
@@ -52,6 +53,8 @@ class BaseTicketParser(ABC):
     enseigne: str = "inconnu"
     # Nom complet de l'enseigne pour affichage
     enseigne_nom: str = "Enseigne inconnue"
+    # Nom du parser en fonction du modèle de ticket
+    parser_name: str = "inconnu"
 
     def get_nom_magasin(self, lignes: List[str]) -> str:
         """Retourne le nom du magasin. Peut être surchargé pour extraire du ticket."""
@@ -89,6 +92,7 @@ class AncienFormatParser(BaseTicketParser):
 
     enseigne = "systeme_u"
     enseigne_nom = "Système U"
+    parser_name = "format_1"
 
     def get_nom_magasin(self, lignes: List[str]) -> str:
         """Extrait le nom du magasin depuis le ticket (LOCOMA SAS)"""
@@ -291,6 +295,7 @@ class NouveauFormatParser(BaseTicketParser):
 
     enseigne = "systeme_u"
     enseigne_nom = "Système U"
+    parser_name = "format_2"
 
     def get_nom_magasin(self, lignes: List[str]) -> str:
         """Extrait le nom du magasin depuis le ticket"""
@@ -495,6 +500,8 @@ class AnalyseurTicketU:
         self.connection = None
         self.connect_db()
         self.init_database()
+        # État de session pour la gestion des doublons (None / 'all' / 'none')
+        self.update_mode: Optional[str] = None
         # Initialisation des parsers (priorité au nouveau format)
         self.parsers: List[BaseTicketParser] = [
             NouveauFormatParser(),
@@ -575,6 +582,7 @@ class AnalyseurTicketU:
                         total DECIMAL(10,2) NOT NULL,
                         mode_paiement VARCHAR(100),
                         fichier VARCHAR(255) UNIQUE NOT NULL,
+                        parser_name VARCHAR(50) DEFAULT 'inconnu',
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         INDEX idx_date (date),
                         INDEX idx_ticket (numero_ticket),
@@ -613,6 +621,14 @@ class AnalyseurTicketU:
                         ALTER TABLE tickets ADD COLUMN enseigne VARCHAR(50) NOT NULL DEFAULT 'systeme_u' AFTER id
                     ''')
                     cursor.execute('CREATE INDEX idx_enseigne ON tickets (enseigne)')
+                except Exception:
+                    pass  # La colonne existe déjà
+
+                # Migration: ajouter la colonne parser_name si elle n'existe pas
+                try:
+                    cursor.execute('''
+                        ALTER TABLE tickets ADD COLUMN parser_name VARCHAR(50) DEFAULT 'inconnu'
+                    ''')
                 except Exception:
                     pass  # La colonne existe déjà
 
@@ -681,7 +697,8 @@ class AnalyseurTicketU:
             articles=articles,
             total=total,
             mode_paiement=mode_paiement,
-            fichier=nom_fichier
+            fichier=nom_fichier,
+            parser_name=parser.parser_name
         )
 
     def _selectionner_parser(self, lignes: List[str]) -> Optional[BaseTicketParser]:
@@ -697,22 +714,69 @@ class AnalyseurTicketU:
             with self.connection.cursor() as cursor:
                 # Vérifier si le ticket existe déjà
                 cursor.execute("SELECT id FROM tickets WHERE fichier = %s", (ticket.fichier,))
-                if cursor.fetchone():
-                    print(f"  - Ticket {ticket.fichier} déjà en base")
+                existing = cursor.fetchone()
+
+                if existing:
+                    ticket_id = existing[0]
+
+                    # Déterminer l'action selon l'état de session
+                    if self.update_mode == 'none':
+                        print(f"  - Ticket {ticket.fichier} ignoré (mode Aucun)")
+                        return
+                    elif self.update_mode == 'all':
+                        do_update = True
+                    else:
+                        print(f"  - Ticket {ticket.fichier} déjà en base. Mettre à jour ?")
+                        reponse = ""
+                        while not reponse:
+                            reponse = input("-- [O]ui / [N]on / [T]ous / [A]ucun : ").strip()
+                        r = reponse[0].upper()
+                        if r == 'O':
+                            do_update = True
+                        elif r == 'N':
+                            print(f"  - Ignoré")
+                            return
+                        elif r == 'T':
+                            do_update = True
+                            self.update_mode = 'all'
+                            print(f"  - Mode 'Tous' activé pour cette session")
+                        elif r == 'A':
+                            self.update_mode = 'none'
+                            print(f"  - Mode 'Aucun' activé, ticket ignoré")
+                            return
+                        else:
+                            print(f"  - Réponse non reconnue, ticket ignoré")
+                            return
+
+                    if do_update:
+                        cursor.execute('''
+                            UPDATE tickets SET enseigne=%s, date=%s, heure=%s, magasin=%s,
+                                operateur=%s, tpv=%s, numero_ticket=%s, total=%s,
+                                mode_paiement=%s, parser_name=%s
+                            WHERE id=%s
+                        ''', (ticket.enseigne, ticket.date, ticket.heure, ticket.magasin,
+                              ticket.operateur, ticket.tpv, ticket.numero_ticket, ticket.total,
+                              ticket.mode_paiement, ticket.parser_name, ticket_id))
+                        cursor.execute("DELETE FROM articles WHERE ticket_id = %s", (ticket_id,))
+                        for article in ticket.articles:
+                            cursor.execute('''
+                                INSERT INTO articles (ticket_id, nom, prix_unitaire, quantite, prix_total, tva_code, rayon)
+                                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                            ''', (ticket_id, article.nom, article.prix_unitaire, article.quantite,
+                                  article.prix_total, article.tva_code, article.rayon))
+                        print(f"  ✓ Ticket {ticket.fichier} mis à jour: {len(ticket.articles)} articles, {ticket.total:.2f}€")
                     return
 
-                # Insérer le ticket
+                # Nouveau ticket : insertion
                 cursor.execute('''
-                    INSERT INTO tickets (enseigne, date, heure, magasin, operateur, tpv, numero_ticket, total, mode_paiement, fichier)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ''', (
-                    ticket.enseigne, ticket.date, ticket.heure, ticket.magasin, ticket.operateur,
-                    ticket.tpv, ticket.numero_ticket, ticket.total, ticket.mode_paiement, ticket.fichier
-                ))
+                    INSERT INTO tickets (enseigne, date, heure, magasin, operateur, tpv, numero_ticket, total, mode_paiement, fichier, parser_name)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ''', (ticket.enseigne, ticket.date, ticket.heure, ticket.magasin, ticket.operateur,
+                      ticket.tpv, ticket.numero_ticket, ticket.total, ticket.mode_paiement,
+                      ticket.fichier, ticket.parser_name))
 
                 ticket_id = cursor.lastrowid
 
-                # Insérer les articles
                 for article in ticket.articles:
                     cursor.execute('''
                         INSERT INTO articles (ticket_id, nom, prix_unitaire, quantite, prix_total, tva_code, rayon)
@@ -734,6 +798,7 @@ class AnalyseurTicketU:
             print("❌ Aucun fichier PDF trouvé dans le dossier")
             return
 
+        self.update_mode = None  # Réinitialiser l'état de session à chaque batch
         print(f"\n=== TRAITEMENT DE {len(fichiers_pdf)} FICHIERS PDF ===")
 
         tickets_traites = 0
