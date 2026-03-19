@@ -90,7 +90,8 @@ df_kpi = query(f"""
     SELECT COUNT(*) as nb_tickets,
            SUM(total) as total_depense,
            AVG(total) as moyenne_ticket,
-           COUNT(DISTINCT magasin) as nb_magasins
+           COUNT(DISTINCT magasin) as nb_magasins,
+           COUNT(DISTINCT enseigne) as nb_enseignes
     FROM tickets t
     {filtre_where}
 """, filtre_params)
@@ -100,11 +101,28 @@ if df_kpi.empty or df_kpi["nb_tickets"][0] == 0:
     st.stop()
 
 k = df_kpi.iloc[0]
-col1, col2, col3, col4 = st.columns(4)
+col1, col2, col3, col4, col5 = st.columns(5)
 col1.metric("Tickets", int(k["nb_tickets"]))
 col2.metric("Total dépensé", f"{float(k['total_depense']):.2f} €")
 col3.metric("Moyenne / ticket", f"{float(k['moyenne_ticket']):.2f} €")
 col4.metric("Magasins", int(k["nb_magasins"]))
+col5.metric("Enseignes", int(k["nb_enseignes"]))
+
+# Une ligne par semaine sur la période filtrée — len() donne le nb de semaines
+df_semaines = query(f"""
+    SELECT CONCAT(YEAR(t.date), '_', LPAD(WEEK(t.date), 2, '0')) as semaine,
+           SUM(t.total) as total_semaine
+    FROM tickets t
+    {filtre_where}
+    GROUP BY semaine
+    ORDER BY semaine ASC
+""", filtre_params)
+
+nb_semaines = len(df_semaines)
+col1, col2 = st.columns(2)
+if nb_semaines > 0:
+    col1.metric("Semaines", nb_semaines)
+    col2.metric("Moyenne / semaine", f"{float(k['total_depense']) / nb_semaines:.2f} €")
 
 st.divider()
 
@@ -125,15 +143,22 @@ df_mois = query(f"""
 if not df_mois.empty:
     col_left, col_right = st.columns(2)
     with col_left:
+        moy_mensuelle = df_mois["total_mois"].mean()
         fig = px.bar(df_mois, x="mois", y="total_mois",
                      labels={"mois": "Mois", "total_mois": "Montant (€)"},
                      title="Montant total par mois")
-        st.plotly_chart(fig, use_container_width=True)
+        fig.add_hline(
+            y=moy_mensuelle,
+            line_dash="dash", line_color="orange",
+            annotation_text=f"Moy. {moy_mensuelle:.0f} €",
+            annotation_position="top left",
+        )
+        st.plotly_chart(fig, width='stretch')
     with col_right:
         fig2 = px.line(df_mois, x="mois", y="nb_tickets", markers=True,
                        labels={"mois": "Mois", "nb_tickets": "Nombre de tickets"},
                        title="Nombre de tickets par mois")
-        st.plotly_chart(fig2, use_container_width=True)
+        st.plotly_chart(fig2, width='stretch')
 
 st.divider()
 
@@ -167,7 +192,7 @@ if not df_top.empty:
                 "qte_totale": "Qté", "prix_moyen": "Prix moy. (€)",
                 "total_depense": "Total (€)"
             }),
-            use_container_width=True,
+            width='stretch',
             hide_index=True,
         )
     with col_right:
@@ -178,7 +203,7 @@ if not df_top.empty:
             title=f"Top {min(top_n, 15)} articles par montant",
         )
         fig3.update_layout(yaxis={"autorange": "reversed"})
-        st.plotly_chart(fig3, use_container_width=True)
+        st.plotly_chart(fig3, width='stretch')
 
 st.divider()
 
@@ -199,7 +224,7 @@ df_rayons = query(f"""
 if not df_rayons.empty:
     fig4 = px.pie(df_rayons, names="rayon", values="total",
                   title="Dépenses par rayon")
-    st.plotly_chart(fig4, use_container_width=True)
+    st.plotly_chart(fig4, width='stretch')
 
 st.divider()
 
@@ -226,7 +251,7 @@ if not df_tickets.empty:
             "mode_paiement": "Paiement", "parser_name": "Format",
             "nb_articles": "Articles"
         }),
-        use_container_width=True,
+        width='stretch',
         hide_index=True,
     )
 
@@ -252,7 +277,7 @@ with st.expander("🔍 Qualité des données"):
         st.success("✅ Tous les totaux sont cohérents")
     else:
         st.warning(f"⚠️ {len(df_ecarts)} ticket(s) avec écart de total")
-        st.dataframe(df_ecarts, use_container_width=True, hide_index=True)
+        st.dataframe(df_ecarts, width='stretch', hide_index=True)
 
     df_suspects = query("""
         SELECT COUNT(*) as nb FROM articles
