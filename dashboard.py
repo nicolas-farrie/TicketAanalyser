@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """
 Dashboard web — Analyseur Tickets Système U
-Visualisation des données extraites en base MariaDB
+Visualisation des données extraites en base (MariaDB ou SQLite)
 """
 
-import configparser
 import os
 
 import pandas as pd
 import plotly.express as px
-import pymysql
 import streamlit as st
+
+from database import create_database, load_config
 
 # ─── Configuration page ───────────────────────────────────────────────────────
 
@@ -23,27 +23,16 @@ st.set_page_config(
 # ─── Connexion BD ─────────────────────────────────────────────────────────────
 
 @st.cache_resource
-def get_connection():
+def get_db():
     config_file = os.environ.get("TICKET_CONFIG", "config.ini")
-    config = configparser.ConfigParser()
-    config.read(config_file)
-    return pymysql.connect(
-        host=config.get("database", "host", fallback="localhost"),
-        port=config.getint("database", "port", fallback=3306),
-        user=config.get("database", "user", fallback="root"),
-        password=config.get("database", "password", fallback=""),
-        database=config.get("database", "database", fallback="tickets_u"),
-        charset="utf8mb4",
-        cursorclass=pymysql.cursors.DictCursor,
-    )
+    return create_database(load_config(config_file))
+
+
+db = get_db()
 
 
 def query(sql: str, params=None) -> pd.DataFrame:
-    conn = get_connection()
-    conn.ping(reconnect=True)
-    with conn.cursor() as cursor:
-        cursor.execute(sql, params or ())
-        return pd.DataFrame(cursor.fetchall())
+    return pd.DataFrame(db.query(sql, params))
 
 
 # ─── Sidebar : filtres ────────────────────────────────────────────────────────
@@ -110,7 +99,7 @@ col5.metric("Enseignes", int(k["nb_enseignes"]))
 
 # Une ligne par semaine sur la période filtrée — len() donne le nb de semaines
 df_semaines = query(f"""
-    SELECT CONCAT(YEAR(t.date), '_', LPAD(WEEK(t.date), 2, '0')) as semaine,
+    SELECT {db.fmt_week('t.date')} as semaine,
            SUM(t.total) as total_semaine
     FROM tickets t
     {filtre_where}
@@ -119,9 +108,9 @@ df_semaines = query(f"""
 """, filtre_params)
 
 nb_semaines = len(df_semaines)
-col1, col2 = st.columns(2)
+col1, col2, col3, col4, col5 = st.columns(5)
 if nb_semaines > 0:
-    col1.metric("Semaines", nb_semaines)
+    col1.metric("Nb Semaines", nb_semaines)
     col2.metric("Moyenne / semaine", f"{float(k['total_depense']) / nb_semaines:.2f} €")
 
 st.divider()
@@ -131,12 +120,12 @@ st.divider()
 st.subheader("📈 Évolution mensuelle")
 
 df_mois = query(f"""
-    SELECT DATE_FORMAT(t.date, '%%Y-%%m') as mois,
+    SELECT {db.fmt_month('t.date')} as mois,
            COUNT(*) as nb_tickets,
            SUM(t.total) as total_mois
     FROM tickets t
     {filtre_where}
-    GROUP BY DATE_FORMAT(t.date, '%%Y-%%m')
+    GROUP BY {db.fmt_month('t.date')}
     ORDER BY mois
 """, filtre_params)
 
@@ -187,14 +176,18 @@ if not df_top.empty:
     col_left, col_right = st.columns([2, 3])
     with col_left:
         st.dataframe(
-            df_top.rename(columns={
-                "nom": "Article", "nb_achats": "Achats",
-                "qte_totale": "Qté", "prix_moyen": "Prix moy. (€)",
-                "total_depense": "Total (€)"
-            }),
+            df_top,
+            column_config={
+                "nom":           st.column_config.TextColumn("Article"),
+                "nb_achats":     st.column_config.NumberColumn("Achats", format="%d"),
+                "qte_totale":    st.column_config.NumberColumn("Qté", format="%.3g"),
+                "prix_moyen":    st.column_config.NumberColumn("Prix moy.", format="%.2f €"),
+                "total_depense": st.column_config.NumberColumn("Total", format="%.2f €"),
+            },
             width='stretch',
             hide_index=True,
         )
+
     with col_right:
         fig3 = px.bar(
             df_top.head(15), x="total_depense", y="nom",

@@ -8,17 +8,19 @@ https://claude.ai/chat/64d8e228-2365-4c99-8e91-d108a2091d3d
 """
 
 import argparse
-import pymysql
-import re
+import hashlib
 import os
+import re
 from datetime import datetime
 from pathlib import Path
+
 import PyPDF2
 import pdfplumber
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import List, Optional
-from abc import ABC, abstractmethod
-import configparser
+
+from database import create_database, load_config
 
 
 @dataclass
@@ -45,6 +47,7 @@ class Ticket:
     mode_paiement: str
     fichier: str
     parser_name: str
+    pdf_hash: Optional[str] = None
 
 
 class BaseTicketParser(ABC):
@@ -496,153 +499,28 @@ class NouveauFormatParser(BaseTicketParser):
 
 class AnalyseurTicketU:
     def __init__(self, config_file: str = "config.ini", dry_run: bool = False):
-        """Initialise l'analyseur avec la configuration de base de données"""
         self.dry_run = dry_run
-        self.config = self.load_config(config_file)
-        self.connection = None
-        self.connect_db()
-        self.init_database()
+        self.config = load_config(config_file)
+        self.db = create_database(self.config)
         # État de session pour la gestion des doublons (None / 'all' / 'none')
         self.update_mode: Optional[str] = None
-        # Initialisation des parsers (priorité au nouveau format)
         self.parsers: List[BaseTicketParser] = [
             NouveauFormatParser(),
             AncienFormatParser(),
         ]
 
-    def load_config(self, config_file: str) -> dict:
-        """Charge la configuration depuis un fichier INI"""
-        if not os.path.exists(config_file):
-            self.create_default_config(config_file)
-
-        config = configparser.ConfigParser()
-        config.read(config_file)
-
-        return {
-            'host': config.get('database', 'host', fallback='localhost'),
-            'port': config.getint('database', 'port', fallback=3306),
-            'database': config.get('database', 'database', fallback='tickets_u'),
-            'user': config.get('database', 'user', fallback='root'),
-            'password': config.get('database', 'password', fallback=''),
-        }
-
-    def create_default_config(self, config_file: str):
-        """Crée un fichier de configuration par défaut"""
-        config = configparser.ConfigParser()
-        config['database'] = {
-            'host': 'localhost',
-            'port': '3306',
-            'database': 'tickets_u',
-            'user': 'root',
-            'password': ''
-        }
-
-        with open(config_file, 'w') as f:
-            config.write(f)
-
-        print(f"Fichier de configuration créé: {config_file}")
-        print("Modifiez les paramètres de base de données selon votre configuration.")
-
-    def connect_db(self):
-        """Établit la connexion à MariaDB"""
-        try:
-            self.connection = pymysql.connect(
-                host=self.config['host'],
-                port=self.config['port'],
-                user=self.config['user'],
-                password=self.config['password'],
-                charset='utf8mb4',
-                autocommit=True
+    def _stocker_pdf(self, chemin_pdf: str) -> str:
+        """Lit le PDF, calcule son SHA-256, stocke le blob si nouveau. Retourne le hash."""
+        with open(chemin_pdf, 'rb') as f:
+            contenu = f.read()
+        pdf_hash = hashlib.sha256(contenu).hexdigest()
+        rows = self.db.query("SELECT pdf_hash FROM fichiers_pdf WHERE pdf_hash = %s", (pdf_hash,))
+        if not rows:
+            self.db.execute(
+                "INSERT INTO fichiers_pdf (pdf_hash, contenu, nom_origine, taille) VALUES (%s, %s, %s, %s)",
+                (pdf_hash, contenu, os.path.basename(chemin_pdf), len(contenu))
             )
-            print("✓ Connexion à MariaDB établie")
-
-            # Créer la base si elle n'existe pas
-            with self.connection.cursor() as cursor:
-                cursor.execute(
-                    f"CREATE DATABASE IF NOT EXISTS {self.config['database']} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci")
-                cursor.execute(f"USE {self.config['database']}")
-
-        except Exception as e:
-            print(f"❌ Erreur de connexion à MariaDB: {e}")
-            raise
-
-    def init_database(self):
-        """Initialise les tables MariaDB"""
-        try:
-            with self.connection.cursor() as cursor:
-                # Table des tickets
-                cursor.execute('''
-                    CREATE TABLE IF NOT EXISTS tickets (
-                        id INT AUTO_INCREMENT PRIMARY KEY,
-                        enseigne VARCHAR(50) NOT NULL DEFAULT 'systeme_u',
-                        date DATE NOT NULL,
-                        heure TIME NOT NULL,
-                        magasin VARCHAR(255) NOT NULL,
-                        operateur VARCHAR(50),
-                        tpv VARCHAR(20),
-                        numero_ticket VARCHAR(50) NOT NULL,
-                        total DECIMAL(10,2) NOT NULL,
-                        mode_paiement VARCHAR(100),
-                        fichier VARCHAR(255) UNIQUE NOT NULL,
-                        parser_name VARCHAR(50) DEFAULT 'inconnu',
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        INDEX idx_date (date),
-                        INDEX idx_ticket (numero_ticket),
-                        INDEX idx_fichier (fichier),
-                        INDEX idx_enseigne (enseigne)
-                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-                ''')
-
-                # Table des articles
-                cursor.execute('''
-                    CREATE TABLE IF NOT EXISTS articles (
-                        id INT AUTO_INCREMENT PRIMARY KEY,
-                        ticket_id INT NOT NULL,
-                        nom VARCHAR(500) NOT NULL,
-                        prix_unitaire DECIMAL(10,2) NOT NULL,
-                        quantite DECIMAL(10,3) DEFAULT 1,
-                        prix_total DECIMAL(10,2) NOT NULL,
-                        tva_code VARCHAR(5),
-                        rayon VARCHAR(255),
-                        FOREIGN KEY (ticket_id) REFERENCES tickets (id) ON DELETE CASCADE,
-                        INDEX idx_ticket_id (ticket_id),
-                        INDEX idx_nom (nom(100)),
-                        INDEX idx_prix (prix_total),
-                        INDEX idx_rayon (rayon)
-                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-                ''')
-
-                # Migration: si la table existe déjà avec quantite INT, migrer vers DECIMAL
-                cursor.execute('''
-                    ALTER TABLE articles MODIFY COLUMN quantite DECIMAL(10,3) DEFAULT 1
-                ''')
-
-                # Migration: ajouter la colonne enseigne si elle n'existe pas
-                cursor.execute("""
-                    SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
-                    WHERE TABLE_SCHEMA = %s AND TABLE_NAME = 'tickets' AND COLUMN_NAME = 'enseigne'
-                """, (self.config['database'],))
-                if cursor.fetchone()[0] == 0:
-                    cursor.execute("""
-                        ALTER TABLE tickets ADD COLUMN enseigne VARCHAR(50) NOT NULL DEFAULT 'systeme_u' AFTER id
-                    """)
-                    cursor.execute('CREATE INDEX idx_enseigne ON tickets (enseigne)')
-
-                # Migration: ajouter la colonne parser_name si elle n'existe pas
-                cursor.execute("""
-                    SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
-                    WHERE TABLE_SCHEMA = %s AND TABLE_NAME = 'tickets' AND COLUMN_NAME = 'parser_name'
-                """, (self.config['database'],))
-                if cursor.fetchone()[0] == 0:
-                    cursor.execute("""
-                        ALTER TABLE tickets ADD COLUMN parser_name VARCHAR(50) DEFAULT 'inconnu'
-                    """)
-
-                print("✓ Tables MariaDB initialisées")
-
-        except Exception as e:
-            print(f"❌ Erreur lors de l'initialisation des tables: {e}")
-            raise
+        return pdf_hash
 
     def extraire_texte_pdf(self, chemin_pdf: str) -> str:
         """Extrait le texte d'un PDF avec fallback automatique"""
@@ -669,7 +547,7 @@ class AnalyseurTicketU:
             print(f"  ⚠ Erreur PyPDF2: {e}")
             return ""
 
-    def parser_ticket(self, texte: str, nom_fichier: str) -> Optional[Ticket]:
+    def parser_ticket(self, texte: str, nom_fichier: str, pdf_hash: Optional[str] = None) -> Optional[Ticket]:
         """Parse le contenu d'un ticket Système U avec sélection automatique du parser"""
         lignes = [ligne.strip() for ligne in texte.split('\n') if ligne.strip()]
 
@@ -704,7 +582,8 @@ class AnalyseurTicketU:
             total=total,
             mode_paiement=mode_paiement,
             fichier=nom_fichier,
-            parser_name=parser.parser_name
+            parser_name=parser.parser_name,
+            pdf_hash=pdf_hash,
         )
 
     def _selectionner_parser(self, lignes: List[str]) -> Optional[BaseTicketParser]:
@@ -715,86 +594,86 @@ class AnalyseurTicketU:
         return None
 
     def sauvegarder_ticket(self, ticket: Ticket):
-        """Sauvegarde un ticket en base MariaDB (no-op en mode dry-run)"""
+        """Sauvegarde un ticket en base (no-op en mode dry-run)"""
         if self.dry_run:
             print(f"  [DRY-RUN] {ticket.fichier} — {len(ticket.articles)} articles, {ticket.total:.2f}€ ({ticket.parser_name})")
             return
 
         try:
-            with self.connection.cursor() as cursor:
-                # Vérifier si le ticket existe déjà
-                cursor.execute("SELECT id FROM tickets WHERE fichier = %s", (ticket.fichier,))
-                existing = cursor.fetchone()
+            # Déduplication : hash en priorité, nom de fichier pour anciens tickets sans hash
+            if ticket.pdf_hash:
+                rows = self.db.query("SELECT id FROM tickets WHERE pdf_hash = %s", (ticket.pdf_hash,))
+            else:
+                rows = self.db.query("SELECT id FROM tickets WHERE fichier = %s", (ticket.fichier,))
+            existing = rows[0] if rows else None
 
-                if existing:
-                    ticket_id = existing[0]
+            if existing:
+                ticket_id = existing['id']
 
-                    # Déterminer l'action selon l'état de session
-                    if self.update_mode == 'none':
-                        print(f"  - Ticket {ticket.fichier} ignoré (mode Aucun)")
-                        return
-                    elif self.update_mode == 'all':
-                        do_update = True
-                    else:
-                        print(f"  - Ticket {ticket.fichier} déjà en base. Mettre à jour ?")
-                        reponse = ""
-                        while not reponse:
-                            reponse = input("-- [O]ui / [N]on / [T]ous / [A]ucun : ").strip()
-                        r = reponse[0].upper()
-                        if r == 'O':
-                            do_update = True
-                        elif r == 'N':
-                            print(f"  - Ignoré")
-                            return
-                        elif r == 'T':
-                            do_update = True
-                            self.update_mode = 'all'
-                            print(f"  - Mode 'Tous' activé pour cette session")
-                        elif r == 'A':
-                            self.update_mode = 'none'
-                            print(f"  - Mode 'Aucun' activé, ticket ignoré")
-                            return
-                        else:
-                            print(f"  - Réponse non reconnue, ticket ignoré")
-                            return
-
-                    if do_update:
-                        cursor.execute('''
-                            UPDATE tickets SET enseigne=%s, date=%s, heure=%s, magasin=%s,
-                                operateur=%s, tpv=%s, numero_ticket=%s, total=%s,
-                                mode_paiement=%s, parser_name=%s
-                            WHERE id=%s
-                        ''', (ticket.enseigne, ticket.date, ticket.heure, ticket.magasin,
-                              ticket.operateur, ticket.tpv, ticket.numero_ticket, ticket.total,
-                              ticket.mode_paiement, ticket.parser_name, ticket_id))
-                        cursor.execute("DELETE FROM articles WHERE ticket_id = %s", (ticket_id,))
-                        for article in ticket.articles:
-                            cursor.execute('''
-                                INSERT INTO articles (ticket_id, nom, prix_unitaire, quantite, prix_total, tva_code, rayon)
-                                VALUES (%s, %s, %s, %s, %s, %s, %s)
-                            ''', (ticket_id, article.nom, article.prix_unitaire, article.quantite,
-                                  article.prix_total, article.tva_code, article.rayon))
-                        print(f"  ✓ Ticket {ticket.fichier} mis à jour: {len(ticket.articles)} articles, {ticket.total:.2f}€")
+                if self.update_mode == 'none':
+                    print(f"  - Ticket {ticket.fichier} ignoré (mode Aucun)")
                     return
+                elif self.update_mode == 'all':
+                    do_update = True
+                else:
+                    print(f"  - Ticket {ticket.fichier} déjà en base. Mettre à jour ?")
+                    reponse = ""
+                    while not reponse:
+                        reponse = input("-- [O]ui / [N]on / [T]ous / [A]ucun : ").strip()
+                    r = reponse[0].upper()
+                    if r == 'O':
+                        do_update = True
+                    elif r == 'N':
+                        print(f"  - Ignoré")
+                        return
+                    elif r == 'T':
+                        do_update = True
+                        self.update_mode = 'all'
+                        print(f"  - Mode 'Tous' activé pour cette session")
+                    elif r == 'A':
+                        self.update_mode = 'none'
+                        print(f"  - Mode 'Aucun' activé, ticket ignoré")
+                        return
+                    else:
+                        print(f"  - Réponse non reconnue, ticket ignoré")
+                        return
 
-                # Nouveau ticket : insertion
-                cursor.execute('''
-                    INSERT INTO tickets (enseigne, date, heure, magasin, operateur, tpv, numero_ticket, total, mode_paiement, fichier, parser_name)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ''', (ticket.enseigne, ticket.date, ticket.heure, ticket.magasin, ticket.operateur,
-                      ticket.tpv, ticket.numero_ticket, ticket.total, ticket.mode_paiement,
-                      ticket.fichier, ticket.parser_name))
+                if do_update:
+                    self.db.execute('''
+                        UPDATE tickets SET enseigne=%s, date=%s, heure=%s, magasin=%s,
+                            operateur=%s, tpv=%s, numero_ticket=%s, total=%s,
+                            mode_paiement=%s, parser_name=%s, pdf_hash=%s
+                        WHERE id=%s
+                    ''', (ticket.enseigne, ticket.date, ticket.heure, ticket.magasin,
+                          ticket.operateur, ticket.tpv, ticket.numero_ticket, ticket.total,
+                          ticket.mode_paiement, ticket.parser_name, ticket.pdf_hash, ticket_id))
+                    self.db.execute("DELETE FROM articles WHERE ticket_id = %s", (ticket_id,))
+                    for article in ticket.articles:
+                        self.db.execute('''
+                            INSERT INTO articles (ticket_id, nom, prix_unitaire, quantite, prix_total, tva_code, rayon)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        ''', (ticket_id, article.nom, article.prix_unitaire, article.quantite,
+                              article.prix_total, article.tva_code, article.rayon))
+                    print(f"  ✓ Ticket {ticket.fichier} mis à jour: {len(ticket.articles)} articles, {ticket.total:.2f}€")
+                return
 
-                ticket_id = cursor.lastrowid
+            # Nouveau ticket : insertion
+            ticket_id = self.db.execute('''
+                INSERT INTO tickets (enseigne, date, heure, magasin, operateur, tpv, numero_ticket,
+                                     total, mode_paiement, fichier, parser_name, pdf_hash)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ''', (ticket.enseigne, ticket.date, ticket.heure, ticket.magasin, ticket.operateur,
+                  ticket.tpv, ticket.numero_ticket, ticket.total, ticket.mode_paiement,
+                  ticket.fichier, ticket.parser_name, ticket.pdf_hash))
 
-                for article in ticket.articles:
-                    cursor.execute('''
-                        INSERT INTO articles (ticket_id, nom, prix_unitaire, quantite, prix_total, tva_code, rayon)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s)
-                    ''', (ticket_id, article.nom, article.prix_unitaire, article.quantite,
-                          article.prix_total, article.tva_code, article.rayon))
+            for article in ticket.articles:
+                self.db.execute('''
+                    INSERT INTO articles (ticket_id, nom, prix_unitaire, quantite, prix_total, tva_code, rayon)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                ''', (ticket_id, article.nom, article.prix_unitaire, article.quantite,
+                      article.prix_total, article.tva_code, article.rayon))
 
-                print(f"  ✓ Ticket {ticket.fichier} sauvegardé: {len(ticket.articles)} articles, {ticket.total:.2f}€")
+            print(f"  ✓ Ticket {ticket.fichier} sauvegardé: {len(ticket.articles)} articles, {ticket.total:.2f}€")
 
         except Exception as e:
             print(f"  ❌ Erreur sauvegarde {ticket.fichier}: {e}")
@@ -818,13 +697,15 @@ class AnalyseurTicketU:
         for i, fichier_pdf in enumerate(fichiers_pdf, 1):
             print(f"\n[{i:3d}/{len(fichiers_pdf)}] {fichier_pdf.name}")
 
+            pdf_hash = self._stocker_pdf(str(fichier_pdf)) if not self.dry_run else None
+
             texte = self.extraire_texte_pdf(str(fichier_pdf))
             if not texte.strip():
                 print("  ❌ Pas de texte extrait")
                 tickets_erreur += 1
                 continue
 
-            ticket = self.parser_ticket(texte, fichier_pdf.name)
+            ticket = self.parser_ticket(texte, fichier_pdf.name, pdf_hash)
             if ticket:
                 self.sauvegarder_ticket(ticket)
                 tickets_traites += 1
@@ -841,64 +722,54 @@ class AnalyseurTicketU:
     def verification_tickets(self):
         """Fonction de vérification pour identifier les problèmes de parsing"""
         try:
-            with self.connection.cursor() as cursor:
-                print(f"\n=== VÉRIFICATION DES DONNÉES ===")
+            print(f"\n=== VÉRIFICATION DES DONNÉES ===")
 
-                # Vérifier les tickets avec écarts de totaux
-                cursor.execute('''
-                    SELECT t.id, t.numero_ticket, t.fichier, t.total as total_ticket,
-                           SUM(a.prix_total) as total_articles,
-                           ABS(t.total - SUM(a.prix_total)) as ecart
-                    FROM tickets t
-                    JOIN articles a ON t.id = a.ticket_id
-                    GROUP BY t.id
-                    HAVING ABS(t.total - SUM(a.prix_total)) > 0.01
-                    ORDER BY ecart DESC
-                    LIMIT 10
-                ''')
+            tickets_probleme = self.db.query('''
+                SELECT t.id, t.numero_ticket, t.fichier, t.total as total_ticket,
+                       SUM(a.prix_total) as total_articles,
+                       ABS(t.total - SUM(a.prix_total)) as ecart
+                FROM tickets t
+                JOIN articles a ON t.id = a.ticket_id
+                GROUP BY t.id
+                HAVING ABS(t.total - SUM(a.prix_total)) > 0.01
+                ORDER BY ecart DESC
+                LIMIT 10
+            ''')
+            if tickets_probleme:
+                print(f"\n⚠️  {len(tickets_probleme)} ticket(s) avec écart de total:")
+                for row in tickets_probleme:
+                    print(f"  • Ticket {row['numero_ticket']} ({row['fichier']}): "
+                          f"{row['total_ticket']:.2f}€ vs {row['total_articles']:.2f}€ "
+                          f"(écart: {row['ecart']:.2f}€)")
+            else:
+                print("✅ Tous les totaux sont cohérents")
 
-                tickets_probleme = cursor.fetchall()
-                if tickets_probleme:
-                    print(f"\n⚠️  {len(tickets_probleme)} ticket(s) avec écart de total:")
-                    for ticket_id, num_ticket, fichier, total_ticket, total_articles, ecart in tickets_probleme:
-                        print(
-                            f"  • Ticket {num_ticket} ({fichier}): {total_ticket:.2f}€ vs {total_articles:.2f}€ (écart: {ecart:.2f}€)")
-                else:
-                    print("✅ Tous les totaux sont cohérents")
-
-                # Vérifier les articles suspects
-                cursor.execute('''
-                    SELECT COUNT(*) FROM articles
+            suspects = self.db.query('''
+                SELECT COUNT(*) as nb FROM articles
+                WHERE nom REGEXP '^[0-9]+ x [0-9]+[,.][0-9]+.*€.*$'
+            ''')
+            nb_suspects = suspects[0]['nb']
+            if nb_suspects > 0:
+                print(f"\n⚠️  {nb_suspects} article(s) suspect(s) (lignes de multiplication mal parsées)")
+                for row in self.db.query('''
+                    SELECT id, ticket_id, nom, prix_total FROM articles
                     WHERE nom REGEXP '^[0-9]+ x [0-9]+[,.][0-9]+.*€.*$'
-                ''')
+                    LIMIT 5
+                '''):
+                    print(f"  • ID {row['id']}: '{row['nom']}' - {row['prix_total']:.2f}€")
+            else:
+                print("✅ Aucun article suspect détecté")
 
-                nb_suspects = cursor.fetchone()[0]
-                if nb_suspects > 0:
-                    print(f"\n⚠️  {nb_suspects} article(s) suspect(s) (lignes de multiplication mal parsées)")
-                    cursor.execute('''
-                        SELECT id, ticket_id, nom, prix_total
-                        FROM articles
-                        WHERE nom REGEXP '^[0-9]+ x [0-9]+[,.][0-9]+.*€.*$'
-                        LIMIT 5
-                    ''')
-                    for art_id, ticket_id, nom, prix_total in cursor.fetchall():
-                        print(f"  • ID {art_id}: '{nom}' - {prix_total:.2f}€")
-                else:
-                    print("✅ Aucun article suspect détecté")
+            nb_tickets  = self.db.query("SELECT COUNT(*) as nb FROM tickets")[0]['nb']
+            nb_articles = self.db.query("SELECT COUNT(*) as nb FROM articles")[0]['nb']
+            total_global = self.db.query("SELECT COALESCE(SUM(total), 0) as total FROM tickets")[0]['total']
 
-                # Statistiques de base
-                cursor.execute("SELECT COUNT(*) FROM tickets")
-                nb_tickets = cursor.fetchone()[0]
-                cursor.execute("SELECT COUNT(*) FROM articles")
-                nb_articles = cursor.fetchone()[0]
-                cursor.execute("SELECT SUM(total) FROM tickets")
-                total_global = cursor.fetchone()[0] or 0
-
-                print(f"\n📊 STATISTIQUES GÉNÉRALES")
-                print(f"  • Tickets en base: {nb_tickets}")
-                print(f"  • Articles en base: {nb_articles}")
-                print(f"  • Montant total: {total_global:.2f}€")
-                print(f"  • Moyenne par ticket: {total_global / nb_tickets:.2f}€" if nb_tickets > 0 else "")
+            print(f"\n📊 STATISTIQUES GÉNÉRALES")
+            print(f"  • Tickets en base: {nb_tickets}")
+            print(f"  • Articles en base: {nb_articles}")
+            print(f"  • Montant total: {total_global:.2f}€")
+            if nb_tickets > 0:
+                print(f"  • Moyenne par ticket: {total_global / nb_tickets:.2f}€")
 
         except Exception as e:
             print(f"❌ Erreur lors de la vérification: {e}")
@@ -906,68 +777,48 @@ class AnalyseurTicketU:
     def statistiques(self):
         """Affiche des statistiques détaillées"""
         try:
-            with self.connection.cursor() as cursor:
-                print(f"\n=== ANALYSES DÉTAILLÉES ===")
+            print(f"\n=== ANALYSES DÉTAILLÉES ===")
 
-                # Période et totaux
-                cursor.execute("SELECT MIN(date), MAX(date), COUNT(*), SUM(total) FROM tickets")
-                periode_min, periode_max, nb_tickets, total_depense = cursor.fetchone()
+            r = self.db.query(
+                "SELECT MIN(date) as min_d, MAX(date) as max_d, COUNT(*) as nb, SUM(total) as total FROM tickets"
+            )[0]
+            if r['min_d']:
+                print(f"📅 Période: {r['min_d']} au {r['max_d']}")
+                print(f"🛒 {r['nb']} tickets pour {r['total']:.2f}€")
+                print(f"💰 Moyenne par ticket: {r['total'] / r['nb']:.2f}€")
 
-                if periode_min:
-                    print(f"📅 Période: {periode_min} au {periode_max}")
-                    print(f"🛒 {nb_tickets} tickets pour {total_depense:.2f}€")
-                    print(f"💰 Moyenne par ticket: {total_depense / nb_tickets:.2f}€")
+            print(f"\n🏆 TOP 15 ARTICLES (par montant total)")
+            print(f"{'Produit':<45} {'Achats':<7} {'Qté':<5} {'Prix moy.':<10} {'Total'}")
+            print("─" * 80)
+            for row in self.db.query('''
+                SELECT nom, COUNT(*) as nb_achats, SUM(quantite) as qte_totale,
+                       AVG(prix_unitaire) as prix_moyen, SUM(prix_total) as total_depense
+                FROM articles GROUP BY nom ORDER BY total_depense DESC LIMIT 15
+            '''):
+                nom_court = row['nom'][:42] + "..." if len(row['nom']) > 45 else row['nom']
+                print(f"{nom_court:<45} {row['nb_achats']:<7} {row['qte_totale']:<5.3g} "
+                      f"{row['prix_moyen']:<10.2f} {row['total_depense']:.2f}€")
 
-                # Top 15 des articles par montant total
-                cursor.execute('''
-                    SELECT nom, 
-                           COUNT(*) as nb_achats,
-                           SUM(quantite) as qte_totale,
-                           AVG(prix_unitaire) as prix_moyen,
-                           SUM(prix_total) as total_depense
-                    FROM articles 
-                    GROUP BY nom 
-                    ORDER BY total_depense DESC 
-                    LIMIT 15
-                ''')
-
-                print(f"\n🏆 TOP 15 ARTICLES (par montant total)")
-                print(f"{'Produit':<45} {'Achats':<7} {'Qté':<5} {'Prix moy.':<10} {'Total'}")
-                print("─" * 80)
-
-                for nom, nb, qte, prix_moy, total in cursor.fetchall():
-                    nom_court = nom[:42] + "..." if len(nom) > 45 else nom
-                    print(f"{nom_court:<45} {nb:<7} {qte:<5} {prix_moy:<10.2f} {total:.2f}€")
-
-                # Évolution mensuelle
-                cursor.execute('''
-                    SELECT DATE_FORMAT(date, '%%Y-%%m') as mois,
-                           COUNT(*) as nb_tickets,
-                           SUM(total) as total_mois
-                    FROM tickets 
-                    GROUP BY DATE_FORMAT(date, '%%Y-%%m')
-                    ORDER BY mois DESC
-                    LIMIT 12
-                ''')
-
-                evolution = cursor.fetchall()
-                if evolution:
-                    print(f"\n📈 ÉVOLUTION MENSUELLE (12 derniers mois)")
-                    print(f"{'Mois':<10} {'Tickets':<8} {'Montant':<12} {'Moyenne'}")
-                    print("─" * 45)
-
-                    for mois, nb, total in evolution:
-                        moyenne = total / nb if nb > 0 else 0
-                        print(f"{mois:<10} {nb:<8} {total:<12.2f} {moyenne:.2f}€")
+            evolution = self.db.query(f'''
+                SELECT {self.db.fmt_month('date')} as mois,
+                       COUNT(*) as nb_tickets, SUM(total) as total_mois
+                FROM tickets
+                GROUP BY {self.db.fmt_month('date')}
+                ORDER BY mois DESC LIMIT 12
+            ''')
+            if evolution:
+                print(f"\n📈 ÉVOLUTION MENSUELLE (12 derniers mois)")
+                print(f"{'Mois':<10} {'Tickets':<8} {'Montant':<12} {'Moyenne'}")
+                print("─" * 45)
+                for row in evolution:
+                    moyenne = row['total_mois'] / row['nb_tickets'] if row['nb_tickets'] > 0 else 0
+                    print(f"{row['mois']:<10} {row['nb_tickets']:<8} {row['total_mois']:<12.2f} {moyenne:.2f}€")
 
         except Exception as e:
             print(f"❌ Erreur lors des statistiques: {e}")
 
     def close(self):
-        """Ferme la connexion à la base de données"""
-        if self.connection:
-            self.connection.close()
-            print("🔌 Connexion fermée")
+        self.db.close()
 
 
 def main():
@@ -1032,7 +883,11 @@ def main():
 
         print(f"\n✅ Traitement terminé!")
         if not args.dry_run:
-            print(f"🗄️  Base de données: {analyseur.config['database']} sur {analyseur.config['host']}")
+            db_type = analyseur.config.get('type', 'mariadb')
+            if db_type == 'sqlite':
+                print(f"🗄️  Base SQLite : {analyseur.config.get('path', 'tickets.db')}")
+            else:
+                print(f"🗄️  Base MariaDB : {analyseur.config['database']} sur {analyseur.config['host']}")
 
     except KeyboardInterrupt:
         print("\n\n⚠️  Interruption par l'utilisateur")
