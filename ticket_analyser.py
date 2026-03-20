@@ -600,9 +600,12 @@ class AnalyseurTicketU:
             return
 
         try:
-            # Déduplication : hash en priorité, nom de fichier pour anciens tickets sans hash
+            # Déduplication : hash OU fichier (les anciens tickets ont pdf_hash=NULL)
             if ticket.pdf_hash:
-                rows = self.db.query("SELECT id FROM tickets WHERE pdf_hash = %s", (ticket.pdf_hash,))
+                rows = self.db.query(
+                    "SELECT id FROM tickets WHERE pdf_hash = %s OR fichier = %s",
+                    (ticket.pdf_hash, ticket.fichier)
+                )
             else:
                 rows = self.db.query("SELECT id FROM tickets WHERE fichier = %s", (ticket.fichier,))
             existing = rows[0] if rows else None
