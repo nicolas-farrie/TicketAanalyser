@@ -22,6 +22,13 @@ from typing import List, Optional
 
 from database import create_database, load_config
 
+# Vérification de la disponibilité de Tkinter
+try:
+    import tkinter as tk
+    from tkinter import simpledialog, messagebox
+    GUI_AVAILABLE = True
+except ImportError:
+    GUI_AVAILABLE = False
 
 @dataclass
 class Article:
@@ -503,7 +510,8 @@ class AnalyseurTicketU:
         self.config = load_config(config_file)
         self.db = create_database(self.config)
         # État de session pour la gestion des doublons (None / 'all' / 'none')
-        self.update_mode: Optional[str] = None
+        on_dup = self.config.get('on_duplicate', 'ask').lower()
+        self.update_mode: Optional[str] = {'skip': 'none', 'update': 'all'}.get(on_dup)
         self.parsers: List[BaseTicketParser] = [
             NouveauFormatParser(),
             AncienFormatParser(),
@@ -859,12 +867,14 @@ def main():
     print("║             Version 1.0                  ║")
     print("╚══════════════════════════════════════════╝")
 
-    # Résoudre le chemin : arg > input interactif
+    # Résoudre le chemin : arg CLI > config.ini > input interactif
     dossier_tickets = args.path
+    if not dossier_tickets:
+        cfg = load_config(args.config)
+        dossier_tickets = cfg.get('dir_path', '').strip()
     if not dossier_tickets:
         print("\n📂 Configuration:")
         dossier_tickets = input("Chemin vers le dossier contenant les tickets PDF: ").strip()
-
     if not dossier_tickets:
         print("❌ Chemin vide, abandon.")
         return

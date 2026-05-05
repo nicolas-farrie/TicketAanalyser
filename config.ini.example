@@ -1,6 +1,13 @@
 [database]
+type = mariadb
 host = localhost
 port = 3306
 database = tickets_u
 user = your_username
 password = your_password
+
+[ticketsdir]
+# Chemin vers le dossier de dépôt des tickets PDF (Samba ou local)
+dir_path = /srv/samba/tickets
+# Comportement sur doublon : ask (interactif) | skip (ignorer) | update (écraser)
+on_duplicate = skip

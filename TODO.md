@@ -15,8 +15,8 @@
 
 ## Court terme
 
-- [ ] Mode service systemd + dossier partagé Samba (si déploiement serveur familial)
-- [ ] `on_duplicate = skip|update` dans config.ini pour mode non-supervisé (sans input interactif)
+- [x] Mode service systemd + dossier partagé Samba (`deploy/ticketu-analyser.path` + `.service`)
+- [x] `on_duplicate = skip|update` dans config.ini pour mode non-supervisé (sans input interactif)
 
 ## Moyen terme
 
@@ -27,6 +27,6 @@
 
 ## Distribution locale (Windows / Linux)
 
-- [ ] SQLite déjà supporté via `config.ini` → `type = sqlite`
+- [x] SQLite déjà supporté via `config.ini` → `type = sqlite`
 - [ ] Installeur = `pip install` + `.bat` (Windows) ou `.sh` (Linux) de lancement
 - [ ] Tester l'install from scratch sur un poste vierge

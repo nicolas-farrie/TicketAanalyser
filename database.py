@@ -35,13 +35,15 @@ def load_config(config_file: str = "config.ini") -> dict:
     config = configparser.ConfigParser()
     config.read(config_file)
     return {
-        'type':     config.get('database', 'type',     fallback='mariadb'),
-        'host':     config.get('database', 'host',     fallback='localhost'),
-        'port':     config.getint('database', 'port',  fallback=3306),
-        'database': config.get('database', 'database', fallback='tickets_u'),
-        'user':     config.get('database', 'user',     fallback='root'),
-        'password': config.get('database', 'password', fallback=''),
-        'path':     config.get('database', 'path',     fallback='tickets.db'),
+        'type':         config.get('database', 'type',         fallback='mariadb'),
+        'host':         config.get('database', 'host',         fallback='localhost'),
+        'port':         config.getint('database', 'port',      fallback=3306),
+        'database':     config.get('database', 'database',     fallback='tickets_u'),
+        'user':         config.get('database', 'user',         fallback='root'),
+        'password':     config.get('database', 'password',     fallback=''),
+        'path':         config.get('database', 'path',         fallback='tickets.db'),
+        'dir_path':     config.get('ticketsdir', 'dir_path',   fallback=''),
+        'on_duplicate': config.get('ticketsdir', 'on_duplicate', fallback='ask'),
     }
 
 

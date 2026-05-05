@@ -1,0 +1,23 @@
+[Unit]
+Description=Dashboard Streamlit TicketU
+Documentation=https://github.com/nikkocasa/TicketUanalyser
+After=network.target mariadb.service
+
+[Service]
+Type=simple
+User=ticketu
+Group=ticketu
+WorkingDirectory=/opt/ticketu
+ExecStart=/opt/ticketu/venv/bin/streamlit run dashboard.py \
+    --server.headless=true \
+    --server.port=8501 \
+    --server.address=0.0.0.0
+Restart=on-failure
+RestartSec=5
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ticketu-dashboard
+
+[Install]
+WantedBy=multi-user.target

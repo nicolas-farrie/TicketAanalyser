@@ -1,0 +1,10 @@
+[Unit]
+Description=Surveille le dossier de dépôt des tickets PDF
+Documentation=https://github.com/nikkocasa/TicketUanalyser
+
+[Path]
+# Déclenche ticketu-analyser.service dès qu'un fichier est ajouté/modifié
+PathChanged=/srv/samba/tickets
+
+[Install]
+WantedBy=multi-user.target

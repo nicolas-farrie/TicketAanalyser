@@ -1,0 +1,19 @@
+[Unit]
+Description=Analyse les tickets PDF Système U
+Documentation=https://github.com/nikkocasa/TicketUanalyser
+After=network.target mariadb.service
+
+[Service]
+Type=oneshot
+User=ticketu
+Group=ticketu
+WorkingDirectory=/opt/ticketu
+
+# Petite pause pour s'assurer que le fichier est entièrement écrit avant de lire
+ExecStartPre=/bin/sleep 2
+ExecStart=/opt/ticketu/venv/bin/python /opt/ticketu/ticket_analyser.py \
+    --config /opt/ticketu/config.ini
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ticketu-analyser
