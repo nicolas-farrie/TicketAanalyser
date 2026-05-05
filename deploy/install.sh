@@ -35,8 +35,8 @@ fi
 
 # Créer le virtualenv et installer les dépendances Python
 python3 -m venv "$INSTALL_DIR/venv"
-"$INSTALL_DIR/venv/bin/pip" install --quiet --upgrade pip
-"$INSTALL_DIR/venv/bin/pip" install --quiet pdfplumber PyPDF2 pymysql streamlit
+"$INSTALL_DIR/venv/bin/pip" install --upgrade pip
+"$INSTALL_DIR/venv/bin/pip" install pdfplumber PyPDF2 pymysql streamlit
 
 # Créer le dossier de dépôt des tickets (local sur ce serveur)
 mkdir -p "$SAMBA_DIR"
@@ -98,7 +98,7 @@ systemctl enable --now ticketu-dashboard.service
 
 echo ""
 echo "=== Installation terminée ==="
-echo "  Partage Samba      : \\\\$(hostname -s)\$SAMBA_SHARE_NAME"
+echo "  Partage Samba      : \\\\$(hostname -s)\\${SAMBA_SHARE_NAME}"
 echo "  Dossier local      : $SAMBA_DIR"
 echo "  Dashboard          : http://$(hostname -I | awk '{print $1}'):8501"
 echo "  Logs analyseur     : journalctl -u ticketu-analyser.service -f"
