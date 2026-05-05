@@ -36,7 +36,7 @@ fi
 # Créer le virtualenv et installer les dépendances Python
 python3 -m venv "$INSTALL_DIR/venv"
 "$INSTALL_DIR/venv/bin/pip" install --upgrade pip
-"$INSTALL_DIR/venv/bin/pip" install pdfplumber PyPDF2 pymysql streamlit
+"$INSTALL_DIR/venv/bin/pip" install pdfplumber PyPDF2 pymysql streamlit plotly
 
 # Créer le dossier de dépôt des tickets (local sur ce serveur)
 mkdir -p "$SAMBA_DIR"
