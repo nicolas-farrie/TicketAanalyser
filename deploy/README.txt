@@ -1,13 +1,18 @@
 TicketUanalyser — Déploiement serveur
 ======================================
 
+Architecture
+------------
+  msi-01.local  — serveur applicatif : Python, MariaDB, Streamlit, Samba (partage tickets)
+  Clients réseau — montent \\msi-01\tickets et y déposent les PDF
+  inotify local  — déclenche l'analyse dès qu'un fichier arrive (pas de polling)
+
 Prérequis
 ---------
 - Linux (Debian/Ubuntu recommandé)
-- Python 3.10+
-- MariaDB installé et démarré
-- Samba installé et configuré (voir ci-dessous)
 - Accès root pour l'installation
+- Les paquets suivants sont installés automatiquement par install.sh :
+    python3, python3-venv, samba, mariadb-server
 
 
 Fichiers présents
@@ -57,22 +62,17 @@ Préparer MariaDB
   La première exécution du script crée automatiquement les tables.
 
 
-Configurer Samba (partage réseau)
-----------------------------------
-Ajouter dans /etc/samba/smb.conf :
+Accès Samba (partage réseau)
+-----------------------------
+install.sh configure automatiquement le partage [tickets] dans /etc/samba/smb.conf.
 
-  [tickets]
-  path = /srv/samba/tickets
-  browseable = yes
-  read only = no
-  guest ok = no
-  valid users = @sambashare
-
-Créer un utilisateur Samba pour chaque membre de la famille :
+Ajouter un utilisateur Samba pour chaque membre de la famille :
   sudo smbpasswd -a prenom
+  sudo usermod -aG sambashare prenom
 
-Redémarrer Samba :
-  sudo systemctl restart smbd
+Depuis Windows  : \\msi-01\tickets
+Depuis Linux    : smb://msi-01/tickets
+Depuis macOS    : Finder → Aller → Se connecter au serveur → smb://msi-01/tickets
 
 
 Vérifications

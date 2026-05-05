@@ -7,8 +7,12 @@ set -e
 INSTALL_DIR=/opt/ticketanalyser
 SAMBA_DIR=/srv/samba/tickets
 SERVICE_USER=ticketanalyser
+SAMBA_SHARE_NAME=tickets
 
 echo "=== Installation TicketUanalyser ==="
+
+# Installer les dépendances système
+apt-get install -y python3 python3-venv samba mariadb-server
 
 # Créer l'utilisateur système dédié (sans login shell)
 if ! id "$SERVICE_USER" &>/dev/null; then
@@ -24,25 +28,49 @@ if [ ! -f "$INSTALL_DIR/config.ini" ]; then
     echo "[!] Pensez à renseigner $INSTALL_DIR/config.ini (host, user, password, dir_path)"
 fi
 
-# Créer le virtualenv et installer les dépendances
+# Créer le virtualenv et installer les dépendances Python
 python3 -m venv "$INSTALL_DIR/venv"
 "$INSTALL_DIR/venv/bin/pip" install --quiet --upgrade pip
 "$INSTALL_DIR/venv/bin/pip" install --quiet pdfplumber PyPDF2 pymysql streamlit
 
-# Créer le dossier Samba de dépôt
+# Créer le dossier de dépôt des tickets (local sur ce serveur)
 mkdir -p "$SAMBA_DIR"
 chown "$SERVICE_USER:$SERVICE_USER" "$SAMBA_DIR"
-chmod 775 "$SAMBA_DIR"
+chmod 2775 "$SAMBA_DIR"  # setgid : les nouveaux fichiers héritent du groupe
+
+# Créer le groupe sambashare si absent et y ajouter le service user
+getent group sambashare &>/dev/null || groupadd sambashare
+usermod -aG sambashare "$SERVICE_USER"
 
 # Droits sur le répertoire d'installation
 chown -R "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR"
 
+# Configurer le partage Samba (ajout idempotent)
+SMB_CONF=/etc/samba/smb.conf
+if ! grep -q "\[$SAMBA_SHARE_NAME\]" "$SMB_CONF"; then
+    cat >> "$SMB_CONF" <<EOF
+
+[$SAMBA_SHARE_NAME]
+   path = $SAMBA_DIR
+   browseable = yes
+   read only = no
+   valid users = @sambashare
+   force group = sambashare
+   force user = $SERVICE_USER
+   create mask = 0664
+   directory mask = 2775
+EOF
+    echo "[OK] Partage Samba [$SAMBA_SHARE_NAME] ajouté"
+fi
+systemctl enable --now smbd nmbd
+systemctl restart smbd
+
 # Installer les unités systemd
-cp ticketu-analyser.path   /etc/systemd/system/
+cp ticketu-analyser.path    /etc/systemd/system/
 cp ticketu-analyser.service /etc/systemd/system/
 cp ticketu-dashboard.service /etc/systemd/system/
 
-# Mettre à jour le chemin Samba dans les unités si différent de la valeur par défaut
+# Adapter le chemin dans le path unit si différent de la valeur par défaut
 if [ "$SAMBA_DIR" != "/srv/samba/tickets" ]; then
     sed -i "s|/srv/samba/tickets|$SAMBA_DIR|g" /etc/systemd/system/ticketu-analyser.path
 fi
@@ -53,9 +81,11 @@ systemctl enable --now ticketu-dashboard.service
 
 echo ""
 echo "=== Installation terminée ==="
-echo "  Dossier de dépôt  : $SAMBA_DIR"
+echo "  Partage Samba      : \\\\$(hostname -s)\$SAMBA_SHARE_NAME"
+echo "  Dossier local      : $SAMBA_DIR"
 echo "  Dashboard          : http://$(hostname -I | awk '{print $1}'):8501"
 echo "  Logs analyseur     : journalctl -u ticketu-analyser.service -f"
 echo "  Logs dashboard     : journalctl -u ticketu-dashboard.service -f"
 echo ""
 echo "  Vérifier la config : $INSTALL_DIR/config.ini"
+echo "  Ajouter un user    : smbpasswd -a <prenom>"
