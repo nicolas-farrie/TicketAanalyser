@@ -1,7 +1,7 @@
 [Unit]
 Description=Analyse les tickets PDF Système U
 Documentation=https://github.com/nikkocasa/TicketUanalyser
-After=network.target mariadb.service
+After=network.target docker.service
 
 [Service]
 Type=oneshot

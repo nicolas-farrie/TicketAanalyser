@@ -1,0 +1,15 @@
+services:
+  mariadb:
+    image: mariadb:lts
+    container_name: tck-analyser-db
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      MARIADB_DATABASE: tickets_u
+    volumes:
+      - mariadb_data:/var/lib/mysql
+    ports:
+      - "127.0.0.1:3306:3306"
+
+volumes:
+  mariadb_data:

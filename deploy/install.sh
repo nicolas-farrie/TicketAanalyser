@@ -6,13 +6,14 @@ set -e
 
 INSTALL_DIR=/opt/ticketanalyser
 SAMBA_DIR=/srv/samba/tickets
+DOCKER_DIR=/srv/tck-analyser
 SERVICE_USER=ticketanalyser
 SAMBA_SHARE_NAME=tickets
 
 echo "=== Installation TicketUanalyser ==="
 
 # Installer les dépendances système
-apt-get install -y python3 python3-venv samba mariadb-server
+apt-get install -y python3 python3-venv samba docker-compose-plugin
 
 # Créer l'utilisateur système dédié (sans login shell)
 if ! id "$SERVICE_USER" &>/dev/null; then
@@ -44,6 +45,18 @@ usermod -aG sambashare "$SERVICE_USER"
 
 # Droits sur le répertoire d'installation
 chown -R "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR"
+
+# Déployer MariaDB via Docker dans /srv/tck-analyser
+mkdir -p "$DOCKER_DIR"
+cp docker-compose.yml "$DOCKER_DIR/"
+if [ ! -f "$DOCKER_DIR/.env" ]; then
+    cp .env.example "$DOCKER_DIR/.env"
+    echo "[!] Renseigner les mots de passe dans $DOCKER_DIR/.env avant de continuer"
+    echo "    Puis relancer : docker compose -f $DOCKER_DIR/docker-compose.yml up -d"
+else
+    docker compose -f "$DOCKER_DIR/docker-compose.yml" up -d
+    echo "[OK] Conteneur MariaDB démarré"
+fi
 
 # Configurer le partage Samba (ajout idempotent)
 SMB_CONF=/etc/samba/smb.conf
