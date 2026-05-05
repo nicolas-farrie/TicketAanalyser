@@ -28,7 +28,7 @@ Installation rapide
      sudo bash install.sh
 
 3. Editer la configuration :
-     sudo nano /opt/ticketu/config.ini
+     sudo nano /opt/ticketanalyser/config.ini
 
    Renseigner :
      [database]
@@ -108,6 +108,6 @@ Comportement on_duplicate
 Mise à jour du logiciel
 ------------------------
   sudo systemctl stop ticketu-analyser.path ticketu-dashboard.service
-  sudo cp /nouveau/TicketUanalyser/*.py /opt/ticketu/
-  sudo chown ticketu:ticketu /opt/ticketu/*.py
+  sudo cp /nouveau/TicketUanalyser/*.py /opt/ticketanalyser/
+  sudo chown ticketanalyser:ticketanalyser /opt/ticketanalyser/*.py
   sudo systemctl start ticketu-analyser.path ticketu-dashboard.service

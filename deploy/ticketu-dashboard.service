@@ -5,10 +5,10 @@ After=network.target mariadb.service
 
 [Service]
 Type=simple
-User=ticketu
-Group=ticketu
-WorkingDirectory=/opt/ticketu
-ExecStart=/opt/ticketu/venv/bin/streamlit run dashboard.py \
+User=ticketanalyser
+Group=ticketanalyser
+WorkingDirectory=/opt/ticketanalyser
+ExecStart=/opt/ticketanalyser/venv/bin/streamlit run dashboard.py \
     --server.headless=true \
     --server.port=8501 \
     --server.address=0.0.0.0

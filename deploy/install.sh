@@ -4,9 +4,9 @@
 
 set -e
 
-INSTALL_DIR=/opt/ticketu
+INSTALL_DIR=/opt/ticketanalyser
 SAMBA_DIR=/srv/samba/tickets
-SERVICE_USER=ticketu
+SERVICE_USER=ticketanalyser
 
 echo "=== Installation TicketUanalyser ==="
 
