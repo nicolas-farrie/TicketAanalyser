@@ -1,9 +1,11 @@
 #!/bin/bash
 # Installation de TicketUanalyser sur serveur Linux
-# À lancer en root depuis le dossier du projet
+# Peut être lancé depuis n'importe où : sudo bash deploy/install.sh
 
 set -e
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="$(dirname "$SCRIPT_DIR")"
 INSTALL_DIR=/opt/ticketanalyser
 SAMBA_DIR=/srv/samba/tickets
 DOCKER_DIR=/srv/tck-analyser
@@ -23,7 +25,9 @@ fi
 
 # Créer et peupler le répertoire d'installation
 mkdir -p "$INSTALL_DIR"
-cp -r ../*.py ../config.ini.example "$INSTALL_DIR/"
+if [ "$REPO_DIR" != "$INSTALL_DIR" ]; then
+    cp -r "$REPO_DIR"/*.py "$REPO_DIR"/config.ini.example "$INSTALL_DIR/"
+fi
 if [ ! -f "$INSTALL_DIR/config.ini" ]; then
     cp "$INSTALL_DIR/config.ini.example" "$INSTALL_DIR/config.ini"
     echo "[!] Pensez à renseigner $INSTALL_DIR/config.ini (host, user, password, dir_path)"
@@ -48,9 +52,9 @@ chown -R "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR"
 
 # Déployer MariaDB via Docker dans /srv/tck-analyser
 mkdir -p "$DOCKER_DIR"
-cp docker-compose.yml "$DOCKER_DIR/"
+cp "$SCRIPT_DIR/docker-compose.yml" "$DOCKER_DIR/"
 if [ ! -f "$DOCKER_DIR/.env" ]; then
-    cp .env.example "$DOCKER_DIR/.env"
+    cp "$SCRIPT_DIR/.env.example" "$DOCKER_DIR/.env"
     echo "[!] Renseigner les mots de passe dans $DOCKER_DIR/.env avant de continuer"
     echo "    Puis relancer : docker compose -f $DOCKER_DIR/docker-compose.yml up -d"
 else
@@ -79,9 +83,9 @@ systemctl enable --now smbd nmbd
 systemctl restart smbd
 
 # Installer les unités systemd
-cp ticketu-analyser.path    /etc/systemd/system/
-cp ticketu-analyser.service /etc/systemd/system/
-cp ticketu-dashboard.service /etc/systemd/system/
+cp "$SCRIPT_DIR/ticketu-analyser.path"    /etc/systemd/system/
+cp "$SCRIPT_DIR/ticketu-analyser.service" /etc/systemd/system/
+cp "$SCRIPT_DIR/ticketu-dashboard.service" /etc/systemd/system/
 
 # Adapter le chemin dans le path unit si différent de la valeur par défaut
 if [ "$SAMBA_DIR" != "/srv/samba/tickets" ]; then
