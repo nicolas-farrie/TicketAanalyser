@@ -115,8 +115,8 @@ def query(sql: str, params=None) -> pd.DataFrame:
 st.sidebar.title("🔍 Filtres")
 
 df_dates = query("SELECT MIN(date) as min_d, MAX(date) as max_d FROM tickets")
-min_date = pd.to_datetime(df_dates["min_d"][0]).date() if not df_dates.empty else None
-max_date = pd.to_datetime(df_dates["max_d"][0]).date() if not df_dates.empty else None
+min_date = pd.to_datetime(df_dates["min_d"][0]).date() if not df_dates.empty and pd.notna(df_dates["min_d"][0]) else None
+max_date = pd.to_datetime(df_dates["max_d"][0]).date() if not df_dates.empty and pd.notna(df_dates["max_d"][0]) else None
 
 if min_date and max_date:
     date_range = st.sidebar.date_input(
