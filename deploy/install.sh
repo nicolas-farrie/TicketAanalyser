@@ -83,17 +83,10 @@ systemctl enable --now smbd nmbd
 systemctl restart smbd
 
 # Installer les unités systemd
-cp "$SCRIPT_DIR/ticketu-analyser.path"    /etc/systemd/system/
 cp "$SCRIPT_DIR/ticketu-analyser.service" /etc/systemd/system/
 cp "$SCRIPT_DIR/ticketu-dashboard.service" /etc/systemd/system/
 
-# Adapter le chemin dans le path unit si différent de la valeur par défaut
-if [ "$SAMBA_DIR" != "/srv/samba/tickets" ]; then
-    sed -i "s|/srv/samba/tickets|$SAMBA_DIR|g" /etc/systemd/system/ticketu-analyser.path
-fi
-
 systemctl daemon-reload
-systemctl enable --now ticketu-analyser.path
 systemctl enable --now ticketu-dashboard.service
 
 echo ""

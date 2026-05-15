@@ -698,6 +698,14 @@ class AnalyseurTicketU:
             print("❌ Aucun fichier PDF trouvé dans le dossier")
             return
 
+        # Pré-filtrer les PDFs déjà en base (évite de re-parser avec pdfplumber)
+        processed = {row['fichier'] for row in self.db.query("SELECT fichier FROM tickets")}
+        fichiers_pdf = [f for f in fichiers_pdf if f.name not in processed]
+        if not fichiers_pdf:
+            print("✓ Aucun nouveau ticket à traiter.")
+            return
+        print(f"→ {len(fichiers_pdf)} nouveau(x) PDF à traiter")
+
         self.update_mode = None  # Réinitialiser l'état de session à chaque batch
         mode_label = " [DRY-RUN — aucune écriture en base]" if self.dry_run else ""
         print(f"\n=== TRAITEMENT DE {len(fichiers_pdf)} FICHIERS PDF{mode_label} ===")

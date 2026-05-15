@@ -4,7 +4,13 @@ Dashboard web — Analyseur Tickets Système U
 Visualisation des données extraites en base (MariaDB ou SQLite)
 """
 
+import json
 import os
+import subprocess
+import sys
+import time
+from datetime import datetime
+from pathlib import Path
 
 import pandas as pd
 import plotly.express as px
@@ -29,6 +35,75 @@ def get_db():
 
 
 db = get_db()
+
+# ─── Analyse / mise à jour ────────────────────────────────────────────────────
+
+_SCAN_STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".scan_state.json")
+_SCAN_MIN_INTERVAL = 120  # secondes entre deux déclenchements automatiques
+
+
+def _load_scan_state() -> dict:
+    try:
+        if os.path.exists(_SCAN_STATE_FILE):
+            return json.loads(open(_SCAN_STATE_FILE).read())
+    except Exception:
+        pass
+    return {"last_scan": 0}
+
+
+def _save_scan_state(ts: float):
+    try:
+        with open(_SCAN_STATE_FILE, "w") as f:
+            json.dump({"last_scan": ts}, f)
+    except Exception:
+        pass
+
+
+def _new_pdfs_exist() -> bool:
+    dir_path = db.config.get("dir_path", "")
+    if not dir_path or not os.path.exists(dir_path):
+        return False
+    pdf_files = {p.name for p in Path(dir_path).glob("*.pdf")}
+    if not pdf_files:
+        return False
+    try:
+        processed = {row["fichier"] for row in db.query("SELECT fichier FROM tickets")}
+        return bool(pdf_files - processed)
+    except Exception:
+        return True
+
+
+def run_analyser(force: bool = False) -> tuple[bool, str]:
+    """Lance l'analyseur si nécessaire. Retourne (lancé, journal)."""
+    state = _load_scan_state()
+    elapsed = time.time() - state.get("last_scan", 0)
+    if not force:
+        if elapsed < _SCAN_MIN_INTERVAL:
+            return False, f"Scan récent ({int(elapsed)}s)"
+        if not _new_pdfs_exist():
+            _save_scan_state(time.time())
+            return False, "Aucun nouveau PDF détecté"
+    config_file = os.environ.get("TICKET_CONFIG", "config.ini")
+    script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ticket_analyser.py")
+    result = subprocess.run(
+        [sys.executable, script, "--config", config_file],
+        capture_output=True, text=True, timeout=300,
+        cwd=os.path.dirname(os.path.abspath(__file__)),
+    )
+    _save_scan_state(time.time())
+    output = result.stdout
+    if result.returncode != 0 and result.stderr:
+        output += f"\n[ERREUR]\n{result.stderr}"
+    return True, output
+
+
+# Auto-vérification à chaque nouvelle session (débouncée par _SCAN_MIN_INTERVAL)
+if "auto_checked" not in st.session_state:
+    st.session_state.auto_checked = True
+    if run_analyser(force=False)[0]:
+        st.rerun()
+
+# ─────────────────────────────────────────────────────────────────────────────
 
 
 def query(sql: str, params=None) -> pd.DataFrame:
@@ -63,6 +138,24 @@ liste_enseignes = enseignes["enseigne"].tolist() if not enseignes.empty else []
 enseigne_sel = st.sidebar.multiselect("Enseigne", liste_enseignes, default=liste_enseignes)
 if not enseigne_sel:
     enseigne_sel = liste_enseignes
+
+st.sidebar.divider()
+_state = _load_scan_state()
+_last_ts = _state.get("last_scan", 0)
+if _last_ts:
+    st.sidebar.caption(f"Dernier scan : {datetime.fromtimestamp(_last_ts).strftime('%d/%m %H:%M')}")
+
+if st.sidebar.button("🔄 Mettre à jour"):
+    with st.spinner("Analyse en cours…"):
+        _ran, _output = run_analyser(force=True)
+    if _ran:
+        st.sidebar.success("✅ Mise à jour terminée")
+        if _output.strip():
+            with st.expander("Journal d'analyse"):
+                st.text(_output)
+        st.rerun()
+    else:
+        st.sidebar.info(_output)
 
 # Paramètres partagés pour les requêtes filtrées
 filtre_params = (date_debut, date_fin, *enseigne_sel)
