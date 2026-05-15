@@ -8,7 +8,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$SCRIPT_DIR")"
 INSTALL_DIR=/opt/ticketanalyser
 SAMBA_DIR=/srv/samba/tickets
-DOCKER_DIR=/srv/tck-analyser
 SERVICE_USER=ticketanalyser
 SAMBA_SHARE_NAME=tickets
 
@@ -50,15 +49,14 @@ usermod -aG sambashare "$SERVICE_USER"
 # Droits sur le répertoire d'installation
 chown -R "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR"
 
-# Déployer MariaDB via Docker dans /srv/tck-analyser
-mkdir -p "$DOCKER_DIR"
-cp "$SCRIPT_DIR/docker-compose.yml" "$DOCKER_DIR/"
-if [ ! -f "$DOCKER_DIR/.env" ]; then
-    cp "$SCRIPT_DIR/.env.example" "$DOCKER_DIR/.env"
-    echo "[!] Renseigner les mots de passe dans $DOCKER_DIR/.env avant de continuer"
-    echo "    Puis relancer : docker compose -f $DOCKER_DIR/docker-compose.yml up -d"
+# Déployer MariaDB via Docker (docker-compose.yml dans INSTALL_DIR)
+cp "$SCRIPT_DIR/docker-compose.yml" "$INSTALL_DIR/"
+if [ ! -f "$INSTALL_DIR/.env" ]; then
+    cp "$SCRIPT_DIR/.env.example" "$INSTALL_DIR/.env"
+    echo "[!] Renseigner les mots de passe dans $INSTALL_DIR/.env avant de continuer"
+    echo "    Puis relancer : docker compose -f $INSTALL_DIR/docker-compose.yml up -d"
 else
-    docker compose -f "$DOCKER_DIR/docker-compose.yml" up -d
+    docker compose -f "$INSTALL_DIR/docker-compose.yml" up -d
     echo "[OK] Conteneur MariaDB démarré"
 fi
 
