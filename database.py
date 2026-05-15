@@ -123,21 +123,32 @@ class MariaDBDatabase(BaseDatabase):
 
     def connect(self):
         try:
-            self._connection = pymysql.connect(
+            # Créer la base si elle n'existe pas (connexion sans database= pour éviter l'erreur)
+            bootstrap = pymysql.connect(
                 host=self.config['host'],
                 port=self.config['port'],
                 user=self.config['user'],
                 password=self.config['password'],
                 charset='utf8mb4',
                 autocommit=True,
-                cursorclass=pymysql.cursors.DictCursor,
             )
-            with self._connection.cursor() as c:
+            with bootstrap.cursor() as c:
                 c.execute(
-                    f"CREATE DATABASE IF NOT EXISTS {self.config['database']} "
+                    f"CREATE DATABASE IF NOT EXISTS `{self.config['database']}` "
                     f"CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
                 )
-                c.execute(f"USE {self.config['database']}")
+            bootstrap.close()
+            # Connexion principale avec database= : ping(reconnect=True) préserve la sélection
+            self._connection = pymysql.connect(
+                host=self.config['host'],
+                port=self.config['port'],
+                user=self.config['user'],
+                password=self.config['password'],
+                database=self.config['database'],
+                charset='utf8mb4',
+                autocommit=True,
+                cursorclass=pymysql.cursors.DictCursor,
+            )
             print("✓ Connexion à MariaDB établie")
         except Exception as e:
             print(f"❌ Erreur de connexion à MariaDB: {e}")
